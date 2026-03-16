@@ -1,1 +1,7 @@
 runpod==1.7.13
+pillow
+requests
+decord
+vllm
+transformers
+accelerate
