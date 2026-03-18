@@ -8,23 +8,7 @@ from PIL import Image
 from decord import VideoReader, cpu
 from vllm import LLM, SamplingParams
 
-MODEL_NAME = "Qwen/Qwen2.5-VL-7B-Instruct"
-
-print("Arrancando worker...", flush=True)
-print("Cargando modelo...", flush=True)
-
-llm = LLM(
-    model=MODEL_NAME,
-    trust_remote_code=True,
-    limit_mm_per_prompt={"image": 32},
-)
-
-print("Modelo cargado.", flush=True)
-
-sampling_params = SamplingParams(
-    temperature=0.2,
-    max_tokens=400,
-)
+MODEL_NAME = "Qwen/Qwen2.5-VL-3B-Instruct"
 
 PROMPT = """
 Eres un juez profesional de salto de trampolín.
@@ -50,6 +34,31 @@ Devuelve SOLO JSON con este formato:
 }
 """
 
+_llm = None
+_sampling_params = None
+
+def get_model():
+    global _llm, _sampling_params
+
+    if _llm is None:
+        print("Cargando modelo...", flush=True)
+
+        _llm = LLM(
+            model=MODEL_NAME,
+            trust_remote_code=True,
+            limit_mm_per_prompt={"image": 32},
+        )
+
+        _sampling_params = SamplingParams(
+            temperature=0.2,
+            max_tokens=400,
+        )
+
+        print("Modelo cargado.", flush=True)
+
+    return _llm, _sampling_params
+
+
 def download_video(url):
     r = requests.get(url, timeout=120)
     r.raise_for_status()
@@ -59,7 +68,8 @@ def download_video(url):
     tmp.close()
     return tmp.name
 
-def sample_frames(video_path, n_frames=24):
+
+def sample_frames(video_path, n_frames=16):
     vr = VideoReader(video_path, ctx=cpu(0))
     total = len(vr)
 
@@ -75,11 +85,13 @@ def sample_frames(video_path, n_frames=24):
     frames = vr.get_batch(idx).asnumpy()
     return [Image.fromarray(f) for f in frames]
 
+
 def image_to_b64(img):
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=90)
     encoded = base64.b64encode(buf.getvalue()).decode()
     return f"data:image/jpeg;base64,{encoded}"
+
 
 def handler(job):
     print("Job recibido", flush=True)
@@ -87,6 +99,8 @@ def handler(job):
     video_url = job["input"]["video_url"]
     video = download_video(video_url)
     frames = sample_frames(video)
+
+    llm, sampling_params = get_model()
 
     content = [{"type": "text", "text": PROMPT}]
     for f in frames:
@@ -103,5 +117,6 @@ def handler(job):
     outputs = llm.chat(messages, sampling_params=sampling_params)
 
     return {"result": outputs[0].outputs[0].text}
+
 
 runpod.serverless.start({"handler": handler})
