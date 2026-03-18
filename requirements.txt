@@ -1,7 +1,10 @@
 runpod==1.7.13
+torch
+torchvision
+torchaudio
+transformers>=4.50.0
+accelerate
 pillow
 requests
 decord
-vllm
-transformers
-accelerate
+sentencepiece
