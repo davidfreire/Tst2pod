@@ -1,12 +1,11 @@
-import io
-import base64
 import tempfile
 import requests
-
+import torch
 import runpod
+
 from PIL import Image
 from decord import VideoReader, cpu
-from vllm import LLM, SamplingParams
+from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
 MODEL_NAME = "Qwen/Qwen2.5-VL-3B-Instruct"
 
@@ -24,42 +23,42 @@ Evalúa:
 Devuelve SOLO JSON con este formato:
 
 {
- "approach_score": 0,
- "takeoff_score": 0,
- "flight_score": 0,
- "entry_score": 0,
- "overall_score": 0,
- "faults": [],
- "summary": ""
+  "approach_score": 0,
+  "takeoff_score": 0,
+  "flight_score": 0,
+  "entry_score": 0,
+  "overall_score": 0,
+  "faults": [],
+  "summary": ""
 }
 """
 
-_llm = None
-_sampling_params = None
+model = None
+processor = None
 
 def get_model():
-    global _llm, _sampling_params
+    global model, processor
 
-    if _llm is None:
+    if model is None:
+        print("Cargando processor...", flush=True)
+        processor = AutoProcessor.from_pretrained(
+            MODEL_NAME,
+            trust_remote_code=True
+        )
+
         print("Cargando modelo...", flush=True)
-
-        _llm = LLM(
-            model=MODEL_NAME,
-            trust_remote_code=True,
-            limit_mm_per_prompt={"image": 32},
+        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            MODEL_NAME,
+            torch_dtype=torch.float16,
+            device_map="auto",
+            trust_remote_code=True
         )
-
-        _sampling_params = SamplingParams(
-            temperature=0.2,
-            max_tokens=400,
-        )
-
+        model.eval()
         print("Modelo cargado.", flush=True)
 
-    return _llm, _sampling_params
+    return model, processor
 
-
-def download_video(url):
+def download_video(url: str) -> str:
     r = requests.get(url, timeout=120)
     r.raise_for_status()
 
@@ -68,8 +67,7 @@ def download_video(url):
     tmp.close()
     return tmp.name
 
-
-def sample_frames(video_path, n_frames=16):
+def sample_frames(video_path: str, n_frames: int = 12):
     vr = VideoReader(video_path, ctx=cpu(0))
     total = len(vr)
 
@@ -83,40 +81,38 @@ def sample_frames(video_path, n_frames=16):
         idx = [min(int(i * step), total - 1) for i in range(n_frames)]
 
     frames = vr.get_batch(idx).asnumpy()
-    return [Image.fromarray(f) for f in frames]
-
-
-def image_to_b64(img):
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=90)
-    encoded = base64.b64encode(buf.getvalue()).decode()
-    return f"data:image/jpeg;base64,{encoded}"
-
+    return [Image.fromarray(f).convert("RGB") for f in frames]
 
 def handler(job):
     print("Job recibido", flush=True)
 
     video_url = job["input"]["video_url"]
-    video = download_video(video_url)
-    frames = sample_frames(video)
+    video_path = download_video(video_url)
+    frames = sample_frames(video_path, n_frames=12)
 
-    llm, sampling_params = get_model()
+    model, processor = get_model()
 
-    content = [{"type": "text", "text": PROMPT}]
-    for f in frames:
-        content.append({
-            "type": "image_url",
-            "image_url": {"url": image_to_b64(f)}
-        })
+    prompt = PROMPT + "\nEstas 12 imágenes son frames del mismo vídeo en orden temporal."
 
-    messages = [{
-        "role": "user",
-        "content": content
-    }]
+    inputs = processor(
+        text=[prompt],
+        images=frames,
+        return_tensors="pt",
+        padding=True
+    ).to(model.device)
 
-    outputs = llm.chat(messages, sampling_params=sampling_params)
+    with torch.no_grad():
+        generated_ids = model.generate(
+            **inputs,
+            max_new_tokens=300,
+            do_sample=False
+        )
 
-    return {"result": outputs[0].outputs[0].text}
+    output_text = processor.batch_decode(
+        generated_ids[:, inputs["input_ids"].shape[1]:],
+        skip_special_tokens=True
+    )[0]
 
+    return {"result": output_text}
 
 runpod.serverless.start({"handler": handler})
