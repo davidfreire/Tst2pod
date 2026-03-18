@@ -38,7 +38,6 @@ processor = None
 
 def get_model():
     global model, processor
-
     if model is None:
         print("Cargando processor...", flush=True)
         processor = AutoProcessor.from_pretrained(
@@ -61,7 +60,6 @@ def get_model():
 def download_video(url: str) -> str:
     r = requests.get(url, timeout=120)
     r.raise_for_status()
-
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
     tmp.write(r.content)
     tmp.close()
@@ -70,7 +68,6 @@ def download_video(url: str) -> str:
 def sample_frames(video_path: str, n_frames: int = 12):
     vr = VideoReader(video_path, ctx=cpu(0))
     total = len(vr)
-
     if total == 0:
         raise ValueError("No se pudieron leer frames del vídeo")
 
